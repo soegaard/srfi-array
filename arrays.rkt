@@ -46,6 +46,8 @@
 ;;  [x] implement in-array-axis
 ;;  [x] implement in-array
 ;;  [x] implement for/array
+;;  [x] custom array printer
+;;  [ ] custom interval printer
 ;;  [ ] conversion : array <-> vectors (nested vectors)
 ;;  [/] conversion : array <-> lists   (nested lists)
 ;;  [ ] flomat as backing store
@@ -56,6 +58,7 @@
 ;; DESIGN QUESTIONS
 ;;  * explict strides representation?
 ;;  * explict indexes
+;;  * make-specialized-array : could body be an optional argument?
 ;;  * array-drop-axis : reduce the dimension of an array (remove an axis with size 1)
 ;;  *                   (shows intent)
 
@@ -93,12 +96,13 @@
          interval-permute
          interval-rotate
          interval-cartesian-product
-         in-interval
-         in-interval/internal-vector
          interval-strides
          interval->indexer
          compose-indexers
 
+         in-interval
+         in-interval/internal-vector
+         for/array
          
          (struct-out storage-class)
          generic-storage-class
@@ -1182,7 +1186,7 @@
 ; Specialized arrays can be implemented more efficiently than general arrays.
 ; A storage class represents an interface to a vector-like data structure.
 
-(struct storage-class (getter setter checker maker copier length default) #:transparent)
+(struct storage-class (getter setter checker maker copier length default))
 (define make-storage-class storage-class)
 
 ; The archetypical storage class is a vector.
@@ -1363,6 +1367,22 @@
 (define the-unknown-value (unknown))
 
 ; We represent both generalized and specialized arrays with the same structure.
+; We add a printer. Arrays with a volume less than  current-max-array-print-volume
+; will display the elements. 
+
+(define current-max-array-print-volume (make-parameter 100))
+
+(define (array-print array port mode)
+  (define print (if mode write display))
+  (define dom   (array-domain array))
+  (print 
+   (if (< (interval-volume dom) (current-max-array-print-volume))
+       ; constructor style printing:
+       (list 'array: 
+             (array->lists array))
+       ; omit actual elements
+       (list 'array "..."))
+   port))
 
 (struct array (domain                          ; an interval
                getter                          ; a map from interval to elements
@@ -1372,7 +1392,9 @@
                indexer                         ; for specialized arrays: affine map from indices to index
                safe?                           ; for specialized arrays: boolean
                [elements-in-order? #:mutable]) ; for specialized arrays: boolean or the-unknown value
-  #:transparent
+  ; #:transparent
+  #:methods gen:custom-write 
+  [(define write-proc array-print)]
   )
 
 ; mutable-array? : array -> boolean
