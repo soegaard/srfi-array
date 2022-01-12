@@ -2315,11 +2315,10 @@
   (define new-domain (interval-permute old-domain permutation))
   (define π permutation)
 
-  (define π- (permutation-inverse π))
   (define (π-inv is)
     (vector->list
      (vector-permute
-      (list->vector is) π-)))
+      (list->vector is) π)))
   
   (cond
     [(specialized-array? old-array)
