@@ -257,7 +257,7 @@
 
 ;; A 1-dimensional interval [l,u[ consists of exact integers l, l+1, ..., u-1.
 ;; The names l and u stand for the lower bound and upper bound of the interval respectively.
-;; We require each interval to have at least one element, so u>l+1.
+;; We require each interval to have at least one element, so l<u.
 ;; An element of the interval is called an index.
 
 ;; Similarly, a 2-dimensional interval [l0,u0[ x [l1,u1[ consists of pairs of exact integers.
@@ -298,7 +298,7 @@
              'safe-make-interval
              "the upper bounds must be a vector of exact positive integers"
              "upper bounds" us))
-          (make-interval us)]
+          (make-interval (vector-copy us))]
     [(ls us) (unless (check-bounds ls)
                (raise-arguments-error
                 'safe-make-interval
@@ -321,7 +321,7 @@
                                       "all lower bounds must be strictly smaller than the corresponding upper bound"
                                       "lower bounds" ls
                                       "upper bounds" us))
-             (make-interval ls us)]))
+             (make-interval (vector-copy ls) (vector-copy us))]))
 
 ; make-interval : [ls] us -> interval
 ;  Return an interval with lower and upper bounds given by ls and us.
@@ -596,8 +596,7 @@
                      (<= 0 x (- n 1))
                      (vector-set! seen x #t)))
               (for/and ([x (in-vector seen)])
-                x)
-              #t))))
+                x)))))
 
 (define/contract (safe-interval-translate interval translation)
   (-> interval? translation?
@@ -1860,7 +1859,7 @@
     (set! safe? (specialized-array-default-safe?)))
   
   (define d        (interval-dimension interval))
-  (define mutable? (specialized-array-default-mutable?))
+  (define mutable? #t)
   
   (define specialized-getter  (storage-class-getter  storage-class))
   (define specialized-setter  (storage-class-setter  storage-class))
@@ -2315,10 +2314,11 @@
   (define new-domain (interval-permute old-domain permutation))
   (define π permutation)
 
+  (define π- (permutation-inverse π))
   (define (π-inv is)
     (vector->list
      (vector-permute
-      (list->vector is) π)))
+      (list->vector is) π))) ; or π- ?
   
   (cond
     [(specialized-array? old-array)
