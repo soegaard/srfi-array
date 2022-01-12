@@ -18,6 +18,15 @@
 ;;  [x] respect safe
 ;;  [x] compose-indexers
 ;;  [/] use compose-indexers everywhere relevant
+;;      [x] specialized-array-share
+;;      [x] make-array
+;;      [x] array-extract
+;;      [x] array-tile
+;;      [x] array-translate (for specialized arrays)
+;;      [ ] array-permute
+;;      [ ] array-curry
+;;      [ ] array-reverse
+;;      [ ] array-sample
 ;;  [x] u1-storage-class
 ;;  [ ] implement reshape
 
@@ -1721,7 +1730,7 @@
   (define us  (interval-us new-domain))
 
   (case dim
-    [(1) ; old-domain -> 1-dim-interval -> [0;n[
+    [(1) ; 1-dim-interval -> old-domain -> [0;n[
      (define (new->index i) (call-with-values (λ () (new-domain->old-domain i)) old-indexer))
      (define l0 (vector-ref ls 0))
      (define u0 (vector-ref us 0))
@@ -1730,7 +1739,7 @@
      (define start  i)
      (define stride (- j i))
      (make-indexer-1-dim start l0 stride)]
-    [(2) ; old-domain -> 2-dim-interval -> [0;n[
+    [(2) ; 2-dim-interval -> old-domain -> [0;n[
      (define (new->index i j) (call-with-values (λ () (new-domain->old-domain i j)) old-indexer))
      (define l0 (vector-ref ls 0))
      (define u0 (vector-ref us 0))
@@ -1743,7 +1752,7 @@
      (define stride0 (- j i))
      (define stride1 (- k i))
      (make-indexer-2-dim start l0 l1 stride0 stride1)]
-    [(3) ; old-domain -> 3-dim-interval -> [0;n[
+    [(3) ; 3-dim-interval -> old-domain -> [0;n[
      (define (new->index i j k) (call-with-values (λ () (new-domain->old-domain i j k)) old-indexer))
      (define l0 (vector-ref ls 0))
      (define u0 (vector-ref us 0))
@@ -1762,7 +1771,7 @@
      ; TODO: implement make-indexer-3-dim
      ; (make-indexer-3-dim start l0 l1 l2 stride0 stride1 stride2)
      (make-indexer-n-dim start (vector l0 l1 l2) (vector stride0 stride1 stride2))]
-    [(4) ; old-domain -> 4-dim-interval -> [0;n[
+    [(4) ; 4-dim-interval -> old-domain -> [0;n[
      (define (new->index i j k l) (call-with-values (λ () (new-domain->old-domain i j k l)) old-indexer))
      (define l0 (vector-ref ls 0))
      (define u0 (vector-ref us 0))
@@ -2232,7 +2241,6 @@
                 (array-extract old-array (make-interval ls us)))))
 
 (define (array-translate old-array translation)
-  ; todo: compose index transformation
   (define who 'array-translate)
   (unless (array? old-array)
     (raise-argument-error
@@ -2249,32 +2257,27 @@
      "the translation must be a vector of the same dimension as the array"
      "translation" translation))
 
-  (define old-domain (array-domain old-array))  
-  (define new-domain (interval-translate old-domain translation))
-  (define new->old   (λ is
-                       (apply values
-                              (map - is (vector->list translation)))))
+  (define old-domain  (array-domain  old-array))  
+  (define new-domain  (interval-translate old-domain translation))
+  (define ts          (vector->list translation))
+  (define new->old    (λ is (map - is ts)))
+  (define new->old*   (λ is (apply values (map - is ts))))
+  ;; (define old-indexer (array-indexer old-array))
+  ;; (define indexer     (compose-indexers old-indexer new-domain new->old))
   
   (cond
     [(specialized-array? old-array)
-     (specialized-array-share old-array new-domain new->old)]
+     (specialized-array-share old-array new-domain new->old*)] ; composes
     [(mutable-array? old-array)
      (define old-getter (array-getter old-array))
      (define old-setter (array-setter old-array))
      (make-array new-domain
-                 (λ is
-                   (apply old-getter
-                          (map - is (vector->list translation))))
-                 (lambda (val . is)
-                   (apply old-setter 
-                          val
-                          (map - is (vector->list translation)))))]
+                 (λ is         (apply old-getter     (apply new->old is)))
+                 (λ (val . is) (apply old-setter val (apply new->old is))))]
     [else
      (define old-getter (array-getter old-array))
      (make-array new-domain
-                 (λ is
-                   (apply old-getter
-                          (map - is (vector->list translation)))))]))
+                 (λ is (apply old-getter (apply new->old is))))]))
 
 (define (permutation-inverse permutation)
   (define inverse (make-vector (vector-length permutation) #f))
@@ -2316,7 +2319,7 @@
   (define (π-inv is)
     (vector->list
      (vector-permute
-      (list->vector is) π)))
+      (list->vector is) π-)))
   
   (cond
     [(specialized-array? old-array)
