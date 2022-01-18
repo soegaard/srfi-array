@@ -5173,3 +5173,9 @@ that computes the componentwise products when we need them, the times are
 
 (for-each display (list "Failed " failed-tests " out of " total-tests " total tests.\n"))
 
+
+(let ()
+  (define data (vector 10 11 12 13))
+  (define A (make-specialized-array-from-data data))
+  (test (eq? (array-body A) data) #t)
+  (test (array->list A) '(10 11 12 13)))

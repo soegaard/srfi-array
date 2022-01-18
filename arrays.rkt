@@ -43,6 +43,7 @@
 ;;  [/] array-append : support optional storage class
 ;;  [/] array-stack
 ;;  [ ] array-reshape
+;;  [x] add make-specialized-array-from-data
 
 ;; QUALITY
 ;;  [x] port test suite
@@ -145,12 +146,13 @@
          specialized-array-default-mutable?
          mutable-array?
          specialized-array?
-         (rename-out [safe-make-specialized-array   make-specialized-array]
-                     [safe-specialized-array-share  specialized-array-share]
-                     [safe-array-copy               array-copy]
-                     [safe-array-tile               array-tile]
-                     [safe-array-outer-product      array-outer-product]
-                     [safe-array-reverse            array-reverse])
+         (rename-out [safe-make-specialized-array           make-specialized-array]
+                     [safe-make-specialized-array-from-data make-specialized-array-from-data]
+                     [safe-specialized-array-share          specialized-array-share]
+                     [safe-array-copy                       array-copy]
+                     [safe-array-tile                       array-tile]
+                     [safe-array-outer-product              array-outer-product]
+                     [safe-array-reverse                    array-reverse])
          make-array
          array-curry
          array-extract
@@ -1194,19 +1196,31 @@
 ; Specialized arrays can be implemented more efficiently than general arrays.
 ; A storage class represents an interface to a vector-like data structure.
 
-(struct storage-class (getter setter checker maker copier length default))
+(struct storage-class (getter setter checker maker copier length default data data->body))
 (define make-storage-class storage-class)
 
 ; The archetypical storage class is a vector.
 
+(define (generic-data? x)
+  (and (vector? x) (> (vector-length x) 0)))
+
+(define (generic-data->body data)
+  (unless (generic-data? data)
+    (raise-arguments-error
+     'generic-data->body "expected vector with positive length"
+     "data" data))  
+  data)
+
 (define generic-storage-class
-  (make-storage-class vector-ref         ; getter
-                      vector-set!        ; setter
-                      (lambda (arg) #t)  ; checker
-                      make-vector        ; maker
-                      vector-copy!       ; copier
-                      vector-length      ; length
-                      #f))               ; default value
+  (make-storage-class vector-ref           ; getter
+                      vector-set!          ; setter
+                      (lambda (arg) #t)    ; checker
+                      make-vector          ; maker
+                      vector-copy!         ; copier
+                      vector-length        ; length
+                      #f                   ; default value
+                      generic-data?        ; can data be converted to a body
+                      generic-data->body)) ; convert data to body
 
 ; - (maker n value) returns a linearly addressed object containing n elements of value `value`.
 
@@ -1231,10 +1245,13 @@
      (with-syntax ([pre-vector-ref    (format-id #'prefix "~avector-ref"     #'prefix #:source stx)]
                    [pre-vector-set!   (format-id #'prefix "~avector-set!"    #'prefix #:source stx)]
                    [make-pre-vector   (format-id #'prefix "make-~avector"    #'prefix #:source stx)]
+                   [pre-vector?       (format-id #'prefix "~avector?"        #'prefix #:source stx)]
                    [pre-vector-copy!  (format-id #'prefix "~avector-copy!"   #'prefix #:source stx)]
                    [pre-vector-length (format-id #'prefix "~avector-length"  #'prefix #:source stx)]
                    [pre-storage-class (format-id #'prefix "~a-storage-class" #'prefix #:source stx)]
-                   [pre-checker       (format-id #'prefix "~achecker"        #'prefix #:source stx)])
+                   [pre-checker       (format-id #'prefix "~achecker"        #'prefix #:source stx)]
+                   [pre-data?         (format-id #'prefix "~a-data?"         #'prefix #:source stx)]
+                   [pre-data->body    (format-id #'prefix "~a-data->body"    #'prefix #:source stx)])
      (syntax/loc stx
        (begin
          ; Note: This really ought to in ffi/vector
@@ -1245,6 +1262,16 @@
                  [j (in-range src-start src-end)])
              (pre-vector-set! dest i (pre-vector-ref src j))))
          (define (pre-checker arg) #t)
+         (define (pre-data? x)
+           (and (pre-vector? x) (> (vector-length x) 0)))
+
+         (define (pre-data->body data)
+           (unless (pre-data? data)
+             (raise-arguments-error
+              'pre-data->body "expected vector with positive length"
+              "data" data))  
+           data)
+         
          (define pre-storage-class
            (make-storage-class pre-vector-ref
                                pre-vector-set!
@@ -1252,7 +1279,9 @@
                                make-pre-vector
                                pre-vector-copy!
                                pre-vector-length
-                               default)))))]))
+                               default
+                               pre-data?
+                               pre-data->body)))))]))
 
 (define-syntax (define-storage-class* stx)
   (syntax-parse stx
@@ -1324,9 +1353,16 @@
       
       (for ([i (in-range start end)]
             [j (in-naturals at)])
-        (bit-vector-set! to j (bit-vector-ref from i))))
+        (bit-vector-set! to j (bit-vector-ref from i))))    
     (define default 0)
-    (storage-class getter setter checker maker copier length default)))
+    (define (data? x) (and (bit-vector? x) (> (bit-vector-length x) 0)))
+    (define (data->body data)
+      (unless (data? data)
+        (raise-arguments-error
+         'u1-data->body "expected non-empty bit-vector"
+         "data" data))  
+      data)
+    (storage-class getter setter checker maker copier length default data? data->body)))
 
 
 ;;;
@@ -1858,12 +1894,32 @@
   (when (eq? safe? 'not-present)
     (set! safe? (specialized-array-default-safe?)))
   
-  (define d        (interval-dimension interval))
   (define mutable? #t)
   
+  (define specialized-maker   (storage-class-maker   storage-class))
+
+  (define body     (specialized-maker (interval-volume interval) initial-value))
+
+  (define start    0)
+  (define ls       (interval-ls interval))
+  (define us       (interval-us interval))
+  (define strides  (interval-strides interval))
+  (define indexer  (make-indexer start ls strides))
+
+  (define elements-in-order? #t)  
+
+  (finish-specialized-array interval
+                            storage-class
+                            body
+                            indexer
+                            mutable?
+                            safe?
+                            elements-in-order?))
+
+(define (finish-specialized-array domain storage-class body indexer mutable? safe? elements-in-order?)
+  (define d                   (interval-dimension domain))
   (define specialized-getter  (storage-class-getter  storage-class))
   (define specialized-setter  (storage-class-setter  storage-class))
-  (define specialized-maker   (storage-class-maker   storage-class))
   (define specialized-checker (storage-class-checker storage-class))
   (define getter             (if safe?
                                  (specialize
@@ -1894,19 +1950,8 @@
                               d (i j k l) _ 
                               (λ (v _)    (specialized-setter body (indexer _) v))
                               (λ (v . is) (specialized-setter body (apply indexer is) v))))))
-                             
-  (define body     (specialized-maker (interval-volume interval)
-                                      initial-value))
-  (define start    0)
-  (define ls       (interval-ls interval))
-  (define us       (interval-us interval))
 
-  (define strides  (interval-strides interval))
-  (define indexer  (make-indexer start ls strides))
-
-  (define elements-in-order? #t)  
-
-  (array interval
+  (array domain
          getter
          setter
          storage-class
@@ -1914,6 +1959,49 @@
          indexer
          safe?
          elements-in-order?))
+
+
+(define/contract (safe-make-specialized-array-from-data 
+                  data
+                  [storage-class generic-storage-class]
+                  [mutable?      'not-present]
+                  [safe?         'not-present])
+  (->* (any/c)                        ; mandatory
+       (storage-class? any/c any/c) ; optional
+       any)
+  (make-specialized-array-from-data data storage-class mutable? safe?))
+
+
+(define (make-specialized-array-from-data
+         data
+         [storage-class generic-storage-class]
+         [mutable?      'not-present]
+         [safe?         'not-present])
+  ; this allows the user to pass #f as mutable?
+  (when (eq? mutable? 'not-present)
+    (set! mutable? (specialized-array-default-mutable?)))
+  
+  ; this allows the user to pass #f as safe?
+  (when (eq? safe? 'not-present)
+    (set! safe? (specialized-array-default-safe?)))
+
+  (define data->body (storage-class-data->body storage-class))
+  (define length     (storage-class-length storage-class))
+  
+  (define body    (data->body data))
+  (define indexer (λ (i) i))
+  (define domain  (make-interval (vector (length body))))
+
+  (finish-specialized-array domain
+                            storage-class
+                            body
+                            indexer
+                            mutable?
+                            safe?
+                            #t)) ; in order by definition
+
+
+
 
 
   ;; Elements of extracted arrays of newly created specialized
